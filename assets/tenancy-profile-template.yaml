@@ -1,0 +1,17 @@
+tenancy_name: ""
+tenancy_alias: ""
+tenancy_ocid: "ocid1.tenancy.oc1.."
+home_region: ""
+target_regions:
+  - ""
+compartments_in_scope:
+  - ""
+persona: viewer
+intended_use: onboarding
+onboarding_status: blocked
+business_unit: ""
+application_name: ""
+environment_name: ""
+contacts:
+  - ""
+notes: ""

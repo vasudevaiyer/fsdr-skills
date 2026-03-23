@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OCI FSDR Assistant</title>
+    <link rel="stylesheet" href="/ui-static/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">OCI Full Stack Disaster Recovery</p>
+          <h1>Lift Assistant for FSDR</h1>
+          <p class="hero-text">
+            Create a session for guidance skills, and register a tenancy only when you want inventory-backed workflows or tenancy context.
+          </p>
+        </div>
+        <div class="hero-status">
+          <div class="status-card">
+            <span class="status-label">API</span>
+            <strong id="api-status">Checking...</strong>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Skill Version</span>
+            <strong id="skill-version">Loading...</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel panel-form">
+          <div class="panel-header">
+            <h2>Tenancy Registration</h2>
+            <p>Capture the minimum FSDR context for this prototype.</p>
+          </div>
+
+          <form id="tenancy-form" class="form-grid">
+            <label>
+              <span>Tenancy Name</span>
+              <input name="tenancy_name" placeholder="Finance Production" required />
+            </label>
+            <label>
+              <span>Tenancy OCID</span>
+              <input
+                name="tenancy_ocid"
+                placeholder="ocid1.tenancy.oc1..exampleuniqueid"
+                required
+              />
+            </label>
+            <label>
+              <span>Home Region</span>
+              <input name="home_region" placeholder="us-ashburn-1" required />
+            </label>
+            <label>
+              <span>Target Regions</span>
+              <input name="target_regions" placeholder="us-ashburn-1, us-phoenix-1" required />
+            </label>
+            <label>
+              <span>Compartments In Scope</span>
+              <input
+                name="compartments_in_scope"
+                placeholder="finance-prod-shared, finance-prod-apps"
+                required
+              />
+            </label>
+            <label>
+              <span>Persona</span>
+              <select name="persona">
+                <option value="viewer">viewer</option>
+                <option value="operator" selected>operator</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <label>
+              <span>Intended Use</span>
+              <select name="intended_use">
+                <option value="onboarding">onboarding</option>
+                <option value="readiness">readiness</option>
+                <option value="configure">configure</option>
+                <option value="start-drill" selected>start-drill</option>
+                <option value="stop-drill">stop-drill</option>
+              </select>
+            </label>
+            <label>
+              <span>Application Name</span>
+              <input name="application_name" placeholder="billing-platform" />
+            </label>
+            <label>
+              <span>Environment Name</span>
+              <input name="environment_name" placeholder="prod" />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Register Tenancy</button>
+            </div>
+          </form>
+          <p id="tenancy-feedback" class="feedback"></p>
+        </section>
+
+        <section class="panel panel-session">
+          <div class="panel-header">
+            <h2>Assistant Session</h2>
+            <p>Create a session for guidance prompts. Select a tenancy only when you want inventory checks or tenancy-aware context.</p>
+          </div>
+
+          <div class="session-controls">
+            <label>
+              <span>Registered Tenancies</span>
+              <select id="tenancy-select"></select>
+            </label>
+            <button id="refresh-tenancies" class="btn btn-secondary" type="button">Refresh</button>
+            <button id="create-session" class="btn btn-primary" type="button">Create Session</button>
+          </div>
+
+          <div class="session-meta">
+            <div class="meta-card">
+              <span>Session</span>
+              <strong id="session-id">None</strong>
+            </div>
+            <div class="meta-card">
+              <span>Current Skill</span>
+              <strong id="current-skill">Not started</strong>
+            </div>
+          </div>
+
+          <div class="prompt-bank">
+            <button class="prompt-chip" data-prompt="What is OCI FSDR?">FSDR Intro</button>
+            <button class="prompt-chip" data-prompt="Help me onboard a tenancy for OCI FSDR">Onboard Tenancy</button>
+            <button class="prompt-chip" data-prompt="What IAM policies do I need for FSDR?">Prerequisites & Policies</button>
+            <button
+              class="prompt-chip"
+              data-action="inventory"
+              data-prompt="List compute instances and attached boot volumes"
+            >
+              Infrastructure Inventory
+            </button>
+            <button class="prompt-chip" data-prompt="Help me create a protection group">Create Protection Group</button>
+            <button class="prompt-chip" data-prompt="What members can I add to a protection group?">Member Preparation</button>
+            <button class="prompt-chip" data-prompt="Is billing-prod ready for a drill?">Drill Readiness</button>
+            <button class="prompt-chip" data-prompt="Start a drill for billing-prod">Start Drill</button>
+            <button class="prompt-chip" data-prompt="Stop a drill for billing-prod">Stop Drill</button>
+          </div>
+
+          <section id="inventory-panel" class="inventory-panel">
+            <div class="inventory-header">
+              <div>
+                <h3>Infrastructure Inventory Results</h3>
+                <p>Triggered from the Infrastructure Inventory skill button.</p>
+              </div>
+            </div>
+
+            <form id="inventory-form" class="inventory-form">
+              <label>
+                <span>Compartment OCID</span>
+                <input
+                  id="inventory-compartment-id"
+                  name="compartment_id"
+                  placeholder="ocid1.compartment.oc1..exampleuniqueid"
+                />
+              </label>
+              <label>
+                <span>Region</span>
+                <input id="inventory-region" name="region" placeholder="us-chicago-1" />
+              </label>
+              <label>
+                <span>Instance OCID</span>
+                <input
+                  id="inventory-instance-id"
+                  name="instance_id"
+                  placeholder="Optional: ocid1.instance.oc1..exampleuniqueid"
+                />
+              </label>
+            </form>
+
+            <p id="inventory-feedback" class="feedback"></p>
+            <div id="inventory-results" class="inventory-results empty">
+              Select a tenancy and run inventory to view compute instances, attached boot volumes, block volumes, and VNICs. Tenancy registration is only required for this inventory workflow.
+            </div>
+          </section>
+
+          <section id="chat-panel" class="chat-panel">
+            <div class="chat-box" id="chat-box"></div>
+
+            <form id="message-form" class="message-form">
+              <textarea
+                id="message-input"
+                rows="3"
+                placeholder="Ask the FSDR assistant what you want to do..."
+              ></textarea>
+              <button type="submit" class="btn btn-primary">Send</button>
+            </form>
+            <p id="message-feedback" class="feedback"></p>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/ui-static/app.js"></script>
+  </body>
+</html>

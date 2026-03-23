@@ -1,0 +1,19 @@
+# Editors
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+
+# Shell and logs
+*.log
+
+# Local environment files
+.env
+.env.*
+
+# OS and temp files
+tmp/
+temp/
