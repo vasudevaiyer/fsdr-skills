@@ -111,10 +111,13 @@ Install and run it like this:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-./scripts/run-backend.sh
+./scripts/run-backend.sh install-service
+./scripts/run-backend.sh start
 ```
 
-By default the script starts the backend in the background, binds to `0.0.0.0` on port `8010`, writes logs to `logs/fsdr_backend.log`, and keeps running after logout.
+The preferred path is now `systemd`-managed. `install-service` installs and enables `fsdr-backend.service`, and `start`/`stop`/`restart`/`status` automatically manage that service once it exists. The service binds to `0.0.0.0` on port `8010`, uses the configured Python interpreter, and stays up after logout and across reboots.
+
+If `systemd` is not available, the same script still falls back to the older `nohup` background launcher.
 
 For local access, open:
 

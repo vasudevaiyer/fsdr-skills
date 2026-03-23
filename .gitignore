@@ -17,3 +17,9 @@ __pycache__/
 # OS and temp files
 tmp/
 temp/
+# FSDR backend runtime artifacts
+.fsdr-backend.env
+.fsdr_backend.pid
+scripts/nohup.out
+logs/
+

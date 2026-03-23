@@ -94,6 +94,19 @@ def test_route_request_uses_classifier_result(monkeypatch) -> None:
     assert decision.reason == "ai classifier: database member preparation request"
 
 
+def test_member_preparation_uses_prompt_context_to_reduce_missing_inputs() -> None:
+    decision = route_request(
+        "Prepare the payroll database member for FSDR. The primary database is in us-ashburn-1, the standby peer is in us-phoenix-1, Data Guard replication is configured, and Vault secrets are already in place.",
+        make_tenancy(),
+    )
+
+    assert decision.skill == "skills/prerequisites/members/fsdr-prepare-database.md"
+    assert decision.intent == "member_preparation"
+    assert "primary and peer role mapping" not in (decision.missing_context or [])
+    assert "replication and peer relationship status" not in (decision.missing_context or [])
+    assert "vault and secret dependencies" not in (decision.missing_context or [])
+
+
 def test_multi_member_request_uses_generic_orchestration_skill() -> None:
     decision = route_request("How do I prepare OKE and Database for FSDR?")
 
@@ -116,6 +129,16 @@ def test_multi_member_message_aggregates_member_skills() -> None:
     assert "skills/prerequisites/members/fsdr-prepare-oke.md" in message
     assert "skills/prerequisites/members/fsdr-prepare-database.md" in message
     assert "Overall status:" in message
+
+
+def test_generic_member_question_returns_supported_member_summary() -> None:
+    decision = route_request("What members can I add to a protection group?")
+    message = build_assistant_message(decision, None, Session(user_id="user_demo", current_skill="SKILL.md", skill_version="dev"))
+
+    assert decision.skill == "skills/operations/fsdr-member-preparation.md"
+    assert "Supported member types in this prototype:" in message
+    assert "database: skills/prerequisites/members/fsdr-prepare-database.md" in message
+    assert "Missing context:" not in message
 
 
 def test_policy_tailoring_message_uses_policy_pack_output() -> None:

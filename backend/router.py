@@ -52,6 +52,7 @@ class RouteDecision:
     member_types: tuple[str, ...] = ()
     execution_mode: str = "single_skill"
     invoked_skills: tuple[str, ...] = ()
+    request_text: str = ""
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -112,6 +113,32 @@ _POLICY_TAILORING_TERMS = (
     "operator group",
 )
 _POLICY_SCOPE_TERMS = ("policy", "policies", "iam", "permission", "permissions", "access")
+
+_MEMBER_CONTEXT_TERM_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "application boundary and critical components": (("application", "app", "component", "components", "service", "services", "tier", "tiers"),),
+    "dependency order for recovery readiness": (("dependency", "dependencies", "order", "sequence", "sequencing"),),
+    "known blockers by member type": (("blocker", "blockers", "gap", "gaps", "issue", "issues", "risk", "risks"),),
+    "autonomous database scope": (("autonomous", "adb", "adw", "atp"),),
+    "remote peer and standby mapping": (("peer", "remote", "standby", "target"),),
+    "database type and deployment model": (("database", "db", "dbcs", "exadata", "rac", "autonomous"), ("deployment", "model", "single instance", "single-instance", "rac", "exadata", "vm", "bare metal")),
+    "primary and peer role mapping": (("primary", "source"), ("peer", "standby", "target", "remote")),
+    "replication and peer relationship status": (("replication", "data guard", "dataguard", "peer", "standby", "remote"),),
+    "vault and secret dependencies": (("vault", "secret", "secrets", "wallet", "wallets", "key", "keys"),),
+    "instance scope and recovery style": (("instance", "vm", "compute", "server"), ("recovery", "moving", "non-moving", "nonmoving", "restore", "rehost")),
+    "boot and block volume dependencies": (("boot volume", "block volume", "volume", "volumes"),),
+    "volume group preparation status": (("volume group", "consistency group"),),
+    "automation script and run-command dependencies": (("script", "scripts", "run command", "run-command", "automation", "ansible"),),
+    "source and standby integration scope": (("integration", "integration instance", "oic"), ("source", "standby", "target", "peer")),
+    "source and standby cluster scope": (("cluster", "oke", "kubernetes", "k8s"), ("source", "standby", "target", "peer")),
+    "namespace and workload scope": (("namespace", "workload", "deployment", "service", "app", "application"),),
+    "ingress and load balancer dependencies": (("ingress", "load balancer", "load-balancer", "lb"),),
+}
+_APP_SCOPE_TERMS = ("application", "app", "environment", "env", "workload", "namespace", "service")
+_REGION_SCOPE_TERMS = ("source region", "target region", "region pair", "primary region", "standby region", "ashburn", "phoenix", "frankfurt", "london", "region")
+_CHECKLIST_REVIEW_TERMS = ("checklist", "reviewed", "validated", "documented", "confirmed", "configured", "mapped", "complete", "completed", "ready")
+_NETWORK_DEPENDENCY_TERMS = ("network", "networking", "subnet", "subnets", "nsg", "nsgs", "vcn", "private endpoint")
+_POLICY_DEPENDENCY_TERMS = ("policy", "policies", "iam", "permission", "permissions")
+_SECRET_DEPENDENCY_TERMS = ("secret", "secrets", "vault", "wallet", "wallets", "key", "keys")
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -188,6 +215,92 @@ def _normalize(message: str) -> str:
     return " ".join(message.lower().split())
 
 
+def _groups_match(text: str, groups: tuple[tuple[str, ...], ...]) -> bool:
+    return all(any(term in text for term in group) for group in groups)
+
+
+def _has_application_scope_context(text: str, tenancy: TenancyProfile | None = None) -> bool:
+    if tenancy is not None and (tenancy.application_name or tenancy.environment_name):
+        return True
+    return any(term in text for term in _APP_SCOPE_TERMS)
+
+
+def _has_region_pair_context(text: str, tenancy: TenancyProfile | None = None) -> bool:
+    if tenancy is not None and len(tenancy.target_regions) >= 2:
+        return True
+    if any(term in text for term in _REGION_SCOPE_TERMS) and any(term in text for term in ("source", "target", "primary", "standby", "peer")):
+        return True
+    return len(re.findall(r"\b[a-z]{2}-[a-z-]+-\d\b", text)) >= 2
+
+
+def _has_checklist_review_context(text: str) -> bool:
+    return any(term in text for term in _CHECKLIST_REVIEW_TERMS)
+
+
+def _member_context_item_present(item: str, text: str, tenancy: TenancyProfile | None, member_type: str) -> bool:
+    normalized_item = _normalize_bullet_item(item)
+
+    if normalized_item == "member types involved":
+        return bool(_extract_member_types(text)) or "member type" in text or "members" in text
+    if normalized_item == "region mapping for primary and standby":
+        return _has_region_pair_context(text, tenancy) and any(term in text for term in ("primary", "standby", "peer", "source", "target"))
+    if normalized_item == "backup bucket and restore ownership":
+        return ("bucket" in text or "object storage" in text) and ("backup" in text or "restore" in text)
+    if normalized_item == "networking, policy, and secret dependencies":
+        hits = sum(
+            any(term in text for term in terms)
+            for terms in (_NETWORK_DEPENDENCY_TERMS, _POLICY_DEPENDENCY_TERMS, _SECRET_DEPENDENCY_TERMS)
+        )
+        return hits >= 2
+
+    groups = _MEMBER_CONTEXT_TERM_GROUPS.get(normalized_item)
+    if groups is not None:
+        return _groups_match(text, groups)
+
+    fallback_terms = [token for token in re.split(r"[^a-z0-9]+", normalized_item) if len(token) > 3]
+    return any(term in text for term in fallback_terms)
+
+
+def _member_preparation_known_context(skill: str, tenancy: TenancyProfile | None, request_text: str) -> list[str]:
+    text = _normalize(request_text)
+    member_type, checklist, required_context = _member_skill_summary(skill)
+    known: list[str] = []
+
+    if member_type in {"oke", "database", "autonomous_database", "integration_instance", "application"} and _has_application_scope_context(text, tenancy):
+        known.append("application or environment scope")
+    if _has_region_pair_context(text, tenancy):
+        known.append("source and target region pair")
+
+    for item in required_context:
+        if _member_context_item_present(item, text, tenancy, member_type):
+            known.append(item)
+
+    if checklist and _has_checklist_review_context(text):
+        known.append("member-specific checklist review")
+
+    return _dedupe(known)
+
+
+def _resolve_member_preparation_missing_context(skill: str, tenancy: TenancyProfile | None, request_text: str) -> list[str]:
+    text = _normalize(request_text)
+    member_type, checklist, required_context = _member_skill_summary(skill)
+    missing: list[str] = []
+
+    if member_type in {"oke", "database", "autonomous_database", "integration_instance", "application"} and not _has_application_scope_context(text, tenancy):
+        missing.append("application or environment scope")
+    if not _has_region_pair_context(text, tenancy):
+        missing.append("source and target region pair")
+
+    for item in required_context:
+        if not _member_context_item_present(item, text, tenancy, member_type):
+            missing.append(item)
+
+    if checklist and not _has_checklist_review_context(text):
+        missing.append("member-specific checklist review")
+
+    return _dedupe(missing)
+
+
 def _is_policy_tailoring_request(text: str, intent: str) -> bool:
     if not any(term in text for term in _POLICY_TAILORING_TERMS):
         return False
@@ -220,6 +333,7 @@ def _finalize_decision(
     member_types: tuple[str, ...] = (),
     execution_mode: str = "single_skill",
     invoked_skills: tuple[str, ...] = (),
+    request_text: str = "",
 ) -> RouteDecision:
     selected_skill = skill if skill in ALLOWED_SKILLS else DEFAULT_ROUTER_SKILL
     requires_tenancy = skill_requires_tenancy(selected_skill)
@@ -237,6 +351,7 @@ def _finalize_decision(
         member_types=member_types,
         execution_mode=execution_mode,
         invoked_skills=invoked_skills,
+        request_text=request_text,
     )
 
 
@@ -403,10 +518,17 @@ def _member_skill_summary(skill: str) -> tuple[str, list[str], list[str]]:
     return member_type, checklist, required_context
 
 
-def tenancy_context_summary(tenancy: TenancyProfile | None, skill: str) -> str:
+def tenancy_context_summary(tenancy: TenancyProfile | None, skill: str, request_text: str = "") -> str:
     if tenancy is None:
         if skill_requires_tenancy(skill):
             return 'Known context:\n- no tenancy selected yet\n\nStill needed:\n- tenancy selection or registration'
+        if skill in MEMBER_PREPARATION_SKILLS.values():
+            known = ["no tenancy selected yet", "this request can be handled as instruction-only guidance"]
+            known.extend(_member_preparation_known_context(skill, tenancy, request_text))
+            missing = _resolve_member_preparation_missing_context(skill, tenancy, request_text)
+            if not missing:
+                missing.append("no unresolved member-preparation context captured yet")
+            return f'Known context:\n{bullet_list(known)}\n\nStill needed:\n{bullet_list(missing)}'
         return (
             'Known context:\n- no tenancy selected yet\n- this request can be handled as instruction-only guidance\n\nStill needed:\n- workload-specific scope details for the current question'
         )
@@ -427,6 +549,13 @@ def tenancy_context_summary(tenancy: TenancyProfile | None, skill: str) -> str:
         known.append(f"application: {tenancy.application_name}")
     if tenancy.environment_name:
         known.append(f"environment: {tenancy.environment_name}")
+
+    if skill in MEMBER_PREPARATION_SKILLS.values():
+        known.extend(_member_preparation_known_context(skill, tenancy, request_text))
+        missing = _resolve_member_preparation_missing_context(skill, tenancy, request_text)
+        if not missing:
+            missing.append("no unresolved member-preparation context captured yet")
+        return f'Known context:\n{bullet_list(_dedupe(known))}\n\nStill needed:\n{bullet_list(missing)}'
 
     missing: list[str] = []
 
@@ -483,17 +612,6 @@ def tenancy_context_summary(tenancy: TenancyProfile | None, skill: str) -> str:
         if not tenancy.intended_use:
             missing.append("intended use")
 
-    if skill in MEMBER_PREPARATION_SKILLS.values():
-        member_type, checklist, required_context = _member_skill_summary(skill)
-        if not tenancy.application_name and member_type in {"oke", "database", "autonomous_database", "integration_instance", "application"}:
-            missing.append("application or environment scope")
-        if len(tenancy.target_regions) < 2:
-            missing.append("source and target region pair")
-        if required_context:
-            missing.extend(required_context)
-        if checklist and "member-specific checklist review" not in missing:
-            missing.append("member-specific checklist review")
-
     if not missing:
         missing.append("no additional context captured yet in this prototype")
 
@@ -514,12 +632,15 @@ def route_request(message: str, tenancy: TenancyProfile | None = None) -> RouteD
             confidence=classified.confidence,
             tenancy=tenancy,
             missing_context=classified.missing_context,
+            request_text=text,
         )
 
     if classified.intent == "member_preparation" and len(member_types) > 1:
         invoked_skills = tuple(skill_for_member_preparation(member_type) for member_type in member_types)
         multi_reason = f"{classified.reason} Multi-member orchestration for: {', '.join(member_types)}."
         missing_context = [item for item in (classified.missing_context or []) if item != "member type in scope"]
+        for skill in invoked_skills:
+            missing_context.extend(_resolve_member_preparation_missing_context(skill, tenancy, text))
         return _finalize_decision(
             skill=GENERIC_MEMBER_PREPARATION_SKILL,
             reason=multi_reason,
@@ -527,16 +648,19 @@ def route_request(message: str, tenancy: TenancyProfile | None = None) -> RouteD
             member_type="none",
             confidence=classified.confidence,
             tenancy=tenancy,
-            missing_context=missing_context,
+            missing_context=_dedupe(missing_context),
             member_types=member_types,
             execution_mode="multi_skill",
             invoked_skills=invoked_skills,
+            request_text=text,
         )
 
     finalized_member_types = member_types if classified.intent == "member_preparation" else ()
     invoked_skills = ()
+    resolved_missing_context = classified.missing_context
     if classified.intent == "member_preparation" and classified.best_skill in MEMBER_PREPARATION_SKILLS.values():
         invoked_skills = (classified.best_skill,)
+        resolved_missing_context = _resolve_member_preparation_missing_context(classified.best_skill, tenancy, text)
 
     return _finalize_decision(
         skill=classified.best_skill,
@@ -545,11 +669,11 @@ def route_request(message: str, tenancy: TenancyProfile | None = None) -> RouteD
         member_type=classified.member_type,
         confidence=classified.confidence,
         tenancy=tenancy,
-        missing_context=classified.missing_context,
+        missing_context=resolved_missing_context,
         member_types=finalized_member_types,
         invoked_skills=invoked_skills,
+        request_text=text,
     )
-
 
 def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | None, session: Session) -> str:
     tenancy_text = "No tenancy selected yet."
@@ -599,11 +723,9 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
         common_missing: list[str] = []
         if tenancy is None:
             common_missing.append("selected tenancy is optional for instruction-only planning, but required for validated readiness")
-        if tenancy is None or len(tenancy.target_regions) < 2:
+        if not _has_region_pair_context(decision.request_text, tenancy):
             common_missing.append("source and target region pair")
-        if any(member_type in _MULTI_MEMBER_APP_SCOPE_TYPES for member_type in member_types) and (
-            tenancy is None or (not tenancy.application_name and not tenancy.environment_name)
-        ):
+        if any(member_type in _MULTI_MEMBER_APP_SCOPE_TYPES for member_type in member_types) and not _has_application_scope_context(decision.request_text, tenancy):
             common_missing.append("application or environment scope")
 
         member_sections: list[str] = []
@@ -611,9 +733,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
         for skill in invoked_skills:
             member_type, checklist, required_context = _member_skill_summary(skill)
             member_label = _MEMBER_TYPE_TO_LABEL.get(member_type, member_type)
-            member_missing = list(required_context)
-            if checklist:
-                member_missing.append("member-specific checklist review")
+            member_missing = _resolve_member_preparation_missing_context(skill, tenancy, decision.request_text)
             overall_blockers.extend([f"{member_label}: {_normalize_bullet_item(item)}" for item in member_missing])
             checklist_text = bullet_list(checklist) if checklist else "- checklist not found in skill file"
             context_text = bullet_list(required_context) if required_context else "- scope details from the member skill"
@@ -634,7 +754,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
             f"{invoked_skill_text}\n\n"
             "Common preparation gates:\n"
             f"{bullet_list(common_requirements)}\n\n"
-            f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+            f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
             f"{member_section_text}\n\n"
             "Overall status:\n"
             "- needs preparation\n\n"
@@ -654,7 +774,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
             "- attached boot volumes\n"
             "- attached block volumes\n"
             "- VNIC attachments and IP context\n\n"
-            f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+            f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
             "API to use in this prototype:\n"
             f"- `GET /api/tenancies/{tenancy_id}/inventory/compute?compartment_id=<compartment_ocid>`\n"
             f"- `GET /api/tenancies/{tenancy_id}/inventory/compute?compartment_id=<compartment_ocid>&instance_id=<instance_ocid>`\n\n"
@@ -673,7 +793,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
             f"{context_text}\n\n"
             "Preparation checklist:\n"
             f"{checklist_text}\n\n"
-            f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+            f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
             "Response contract:\n"
             "- member type\n"
             "- known scope\n"
@@ -681,6 +801,32 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
             "- blockers\n"
             "- readiness state\n"
             "- next action"
+        )
+
+    if decision.skill == GENERIC_MEMBER_PREPARATION_SKILL:
+        supported_members = bullet_list([
+            f"{_MEMBER_TYPE_TO_LABEL.get(member_type, member_type)}: {skill}"
+            for member_type, skill in MEMBER_PREPARATION_SKILLS.items()
+        ])
+        common_gates = _extract_titled_block(REPO_ROOT / decision.skill, "Preconditions")
+        common_gates_text = bullet_list(common_gates) if common_gates else (
+            "- tenancy onboarding is ready\n"
+            "- the relevant protection group or application scope is identified\n"
+            "- the user knows which workload or resource types are in scope"
+        )
+        return (
+            f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
+            "This is the generic member-preparation overview.\n\n"
+            "Supported member types in this prototype:\n"
+            f"{supported_members}\n\n"
+            "Common preparation gates:\n"
+            f"{common_gates_text}\n\n"
+            "What this question can answer now:\n"
+            "- which member types are supported in the current prototype\n"
+            "- the common preparation gates before add-member decisions\n"
+            "- the next member-specific skill to use for deeper readiness guidance\n\n"
+            "Recommended next action:\n"
+            "- ask for a specific member type such as `database`, `oke`, `compute`, `autonomous database`, `integration instance`, or `application` if you want detailed preparation steps"
         )
 
     if decision.skill == TENANCY_ONBOARD_SKILL:
@@ -694,7 +840,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
             f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
             "Goal:\n"
             "- establish a reusable tenancy context for later FSDR operations\n\n"
-            f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+            f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
             "Onboarding result for this prototype:\n"
             f"- status: {onboarding_status}\n"
             "- output needed: selected tenancy identifier, onboarding status, missing prerequisites, next step\n\n"
@@ -717,7 +863,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
                 extra = f"\n\nStarter IAM policy statements:\n{bullet_list(policy_lines)}"
             return (
                 f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
-                f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+                f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
                 "Here is the current OCI FSDR prerequisite and IAM policy guidance:\n"
                 f"{policy_guidance}{extra}\n\n"
                 "If you want, the next step is to tailor this to your tenancy, regions, and compartments."
@@ -795,7 +941,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
 
         return (
             f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
-            f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+            f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
             "Policy pack status:\n"
             f"- {policy_pack_status}\n\n"
             "Suggested IAM principals:\n"
@@ -825,7 +971,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
         if protection_group_guidance:
             return (
                 f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
-                f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+                f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
                 "Here is the current DR Protection Group setup guidance:\n"
                 f"{protection_group_guidance}\n\n"
                 "If you want, the next step is to provide the application scope, source region, target region, and bucket details."
@@ -836,7 +982,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
         if readiness_guidance:
             return (
                 f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
-                f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+                f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
                 "Here is the current readiness interpretation for this prototype:\n"
                 f"{readiness_guidance}\n\n"
                 "To assess your readiness, I need the prerequisite status, protection group status, and member preparation status."
@@ -847,7 +993,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
         if start_drill_guidance:
             return (
                 f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
-                f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+                f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
                 "Here is the current Start drill guidance for this prototype:\n"
                 f"{start_drill_guidance}\n\n"
                 "To continue, confirm the target protection group or application scope and that the team wants to create the standby drill stack."
@@ -858,7 +1004,7 @@ def build_assistant_message(decision: RouteDecision, tenancy: TenancyProfile | N
         if stop_drill_guidance:
             return (
                 f"{tenancy_text} Session `{session.id}` is using `{decision.skill}`.\n\n"
-                f"{tenancy_context_summary(tenancy, decision.skill)}\n\n"
+                f"{tenancy_context_summary(tenancy, decision.skill, decision.request_text)}\n\n"
                 "Here is the current Stop drill guidance for this prototype:\n"
                 f"{stop_drill_guidance}\n\n"
                 "To continue, identify the active drill context and confirm that the standby drill stack should be removed."

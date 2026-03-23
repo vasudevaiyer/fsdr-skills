@@ -1,0 +1,18 @@
+[Unit]
+Description=FSDR Backend
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+Group=opc
+WorkingDirectory=/u01/scripts/oci_samples/fsdr
+Environment=HOME=/home/opc
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/u01/scripts/oci_samples/fsdr/.fsdr-backend.env
+ExecStart=/bin/bash -lc 'cd /u01/scripts/oci_samples/fsdr && exec "${PYTHON_BIN:-/u01/venv/bin/python}" -m uvicorn backend.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-8010}"'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
